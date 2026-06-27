@@ -1,0 +1,9 @@
+{
+    "Name": "<cache-name>",
+    "BIDSVersion": "1.10.0",
+    "DatasetType": "study",
+    "License": "<SPDX license identifier, e.g. CC0-1.0>",
+    "Authors": [
+        "<Author Name>"
+    ]
+}

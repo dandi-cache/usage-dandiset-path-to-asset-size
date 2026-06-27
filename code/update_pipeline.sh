@@ -38,12 +38,11 @@ GITHUB_SHA="${GITHUB_SHA:-unknown}"
 BOT_NAME="github-actions[bot]"
 BOT_EMAIL="github-actions[bot]@users.noreply.github.com"
 
-# TODO: if this cache derives from an upstream DataLad dataset, set INPUT_SUBDATASET_URL to
-# register it as an input subdataset. It is cloned into the derivatives dataset and pinned
-# in the provenance of every run. Leave it empty if this cache has no upstream input
-# dataset; the subdataset handling below is then skipped.
-INPUT_SUBDATASET_URL=""  # e.g. https://github.com/dandi-cache/<input-dataset-name>.git
-INPUT_SUBDATASET_PATH="sourcedata/<input-dataset-name>"
+# This cache reads its input live from the DANDI archive via the DANDI Python client
+# (see code/update.py), so there is no upstream DataLad input dataset to register. The
+# subdataset handling below is therefore skipped (INPUT_SUBDATASET_URL is empty).
+INPUT_SUBDATASET_URL=""
+INPUT_SUBDATASET_PATH="sourcedata/dandi-archive"
 
 DS="${RUNNER_TEMP:-/tmp}/derivatives-dataset"
 DISTDIR="${RUNNER_TEMP:-/tmp}/dist-publish"
@@ -114,7 +113,7 @@ fi
 datalad containers-run -n pipeline --explicit \
   "${RUN_INPUT_ARGS[@]}" \
   --output derivatives \
-  -m "Update <cache-name> (code @ ${GITHUB_SHA}; image ${DIGEST})" \
+  -m "Update usage-dandiset-path-to-asset-size (code @ ${GITHUB_SHA}; image ${DIGEST})" \
   "python /code/update.py --base-directory /tmp --limit ${LIMIT}"
 
 # Publish the full results to the `derivatives` branch.
@@ -129,5 +128,5 @@ git -C "${DISTDIR}" init -q -b dist
 git -C "${DISTDIR}" config user.name "${BOT_NAME}"
 git -C "${DISTDIR}" config user.email "${BOT_EMAIL}"
 git -C "${DISTDIR}" add dataset_description.json derivatives
-git -C "${DISTDIR}" commit -q -m "Publish <cache-name>"
+git -C "${DISTDIR}" commit -q -m "Publish usage-dandiset-path-to-asset-size"
 git -C "${DISTDIR}" push -f "${REPO_URL}" dist:dist

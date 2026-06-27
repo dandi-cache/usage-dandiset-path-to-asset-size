@@ -1,14 +1,14 @@
 # DANDI Cache: `usage-dandiset-path-to-asset-size`
 
-A cache mapping every asset in every [DANDI](https://dandiarchive.org/) dandiset to its size in bytes, keyed by the dandiset and the asset's intra-dandiset path.
+A cache mapping each DANDI content id to its asset size in bytes.
 
 Each record is a single JSON object:
 
 ```json
-{"dandiset_id": "000003", "version": "0.230629.1955", "asset_id": "...", "path": "sub-YutaMouse20/sub-YutaMouse20_ses-20170505.nwb", "size": 1234567}
+{"content_id": "00003b22-9c54-4d15-afae-42ea9816c146", "size": 1234567}
 ```
 
-The data is read live from the DANDI archive via the [DANDI Python client](https://dandi.readthedocs.io/), preferring each dandiset's most recently published version (falling back to the draft for unpublished dandisets).
+The content ids are exactly those of the [`dandi-cache/content-id-to-usage-dandiset-path`](https://github.com/dandi-cache/content-id-to-usage-dandiset-path) cache, which is consumed as an input subdataset. For each content id, the size is resolved from the [DANDI archive](https://dandiarchive.org/) via the [DANDI Python client](https://dandi.readthedocs.io/) (preferring each dandiset's most recently published version, falling back to the draft for unpublished dandisets).
 
 Updated frequently.
 

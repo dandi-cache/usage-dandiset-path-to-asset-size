@@ -1,56 +1,84 @@
 import argparse
+import gzip
 import json
 import pathlib
 
 from dandi.dandiapi import DandiAPIClient
 
+# The source cache is registered as an input subdataset under `sourcedata`. Its published
+# derivative is a single JSON object mapping each content id (a DANDI blob/zarr UUID) to a
+# single `{dandiset_id: asset_path}` pair.
+SOURCE_SUBDATASET_NAME = "content-id-to-usage-dandiset-path"
+SOURCE_FILE_STEM = "content_id_to_usage_dandiset_path"
+
+
+def _load_source_mapping(base_directory: pathlib.Path) -> dict:
+    source_directory = base_directory / "sourcedata" / SOURCE_SUBDATASET_NAME / "derivatives"
+    candidate_file_paths = [
+        source_directory / f"{SOURCE_FILE_STEM}.json",
+        source_directory / f"{SOURCE_FILE_STEM}.min.json",
+        source_directory / f"{SOURCE_FILE_STEM}.json.gz",
+        source_directory / f"{SOURCE_FILE_STEM}.min.json.gz",
+    ]
+    for file_path in candidate_file_paths:
+        if file_path.exists():
+            raw = file_path.read_bytes()
+            if file_path.suffix == ".gz":
+                raw = gzip.decompress(raw)
+            return json.loads(raw)
+
+    candidates = ", ".join(file_path.name for file_path in candidate_file_paths)
+    raise FileNotFoundError(f"Could not find the source mapping in {source_directory} (looked for: {candidates}).")
+
 
 def _run(base_directory: pathlib.Path, limit: int | None) -> None:
-    # Map every asset in every dandiset to its size in bytes, keyed by the dandiset and the
-    # asset's intra-dandiset path. The data is read live from the DANDI archive via the DANDI
-    # Python client, so there is no `sourcedata` input; the full cache is recomputed on each
-    # run (sizes and paths of existing dandisets can change as they are edited).
+    # For each content id in the source mapping, resolve the size in bytes of the asset it
+    # refers to and emit a simplified `{content_id, size}` record.
     #
-    # `limit` caps the number of dandisets processed in a single run. It is primarily a
-    # testing/CI knob; the default (None, or the pipeline's 2000) is larger than the number of
-    # dandisets in the archive, so a normal run processes every dandiset.
+    # The content ids are grouped by dandiset so each dandiset's assets are enumerated only
+    # once and matched to the requested paths, rather than issuing one lookup per content id.
+    #
+    # `limit` caps the number of dandisets processed in a single run (primarily a testing/CI
+    # knob); the default processes every dandiset referenced by the source mapping.
+
+    source_mapping = _load_source_mapping(base_directory)
+
+    content_ids_by_dandiset: dict[str, dict[str, str]] = {}  # dandiset_id -> {asset_path: content_id}
+    for content_id, dandiset_path in source_mapping.items():
+        ((dandiset_id, asset_path),) = dandiset_path.items()
+        content_ids_by_dandiset.setdefault(dandiset_id, {})[asset_path] = content_id
+
+    content_id_to_size: dict[str, int] = {}
+    with DandiAPIClient() as client:
+        for index, (dandiset_id, paths_to_content_ids) in enumerate(sorted(content_ids_by_dandiset.items())):
+            if limit is not None and index >= limit:
+                break
+
+            try:
+                dandiset = client.get_dandiset(dandiset_id)
+                most_recent_published_version = dandiset.most_recent_published_version
+                if most_recent_published_version is not None:
+                    dandiset = dandiset.for_version(most_recent_published_version)
+
+                for asset in dandiset.get_assets():
+                    content_id = paths_to_content_ids.get(asset.path)
+                    if content_id is not None:
+                        content_id_to_size[content_id] = asset.size
+            except Exception as exception:  # noqa: BLE001
+                # Skip dandisets that fail to enumerate (e.g. transient API errors, removed
+                # or embargoed dandisets) rather than aborting the entire run.
+                print(f"Skipping dandiset {dandiset_id}: {exception}")
+                continue
 
     derivatives_directory = base_directory / "derivatives"
     derivatives_directory.mkdir(parents=True, exist_ok=True)
 
     output_file_path = derivatives_directory / "usage_dandiset_path_to_asset_size.jsonl"
-
-    with DandiAPIClient() as client, output_file_path.open(mode="w") as file_stream:
-        for index, dandiset in enumerate(client.get_dandisets()):
-            if limit is not None and index >= limit:
-                break
-
-            # Prefer the most recent published version; fall back to the draft when a dandiset
-            # has never been published.
-            most_recent_published_version = dandiset.most_recent_published_version
-            if most_recent_published_version is not None:
-                dandiset = dandiset.for_version(most_recent_published_version)
-
-            dandiset_id = dandiset.identifier
-            version_id = dandiset.version_id
-
-            try:
-                assets = list(dandiset.get_assets())
-            except Exception as exception:  # noqa: BLE001
-                # Skip dandisets that fail to enumerate (e.g. transient API errors or
-                # invalid states) rather than aborting the entire run.
-                print(f"Skipping {dandiset_id}/{version_id}: {exception}")
-                continue
-
-            for asset in assets:
-                record = {
-                    "dandiset_id": dandiset_id,
-                    "version": version_id,
-                    "asset_id": asset.identifier,
-                    "path": asset.path,
-                    "size": asset.size,
-                }
-                file_stream.write(f"{json.dumps(record)}\n")
+    with output_file_path.open(mode="w") as file_stream:
+        file_stream.writelines(
+            f"{json.dumps({'content_id': content_id, 'size': size})}\n"
+            for content_id, size in content_id_to_size.items()
+        )
 
 
 if __name__ == "__main__":

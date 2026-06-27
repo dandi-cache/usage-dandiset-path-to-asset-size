@@ -38,11 +38,15 @@ GITHUB_SHA="${GITHUB_SHA:-unknown}"
 BOT_NAME="github-actions[bot]"
 BOT_EMAIL="github-actions[bot]@users.noreply.github.com"
 
-# This cache reads its input live from the DANDI archive via the DANDI Python client
-# (see code/update.py), so there is no upstream DataLad input dataset to register. The
-# subdataset handling below is therefore skipped (INPUT_SUBDATASET_URL is empty).
-INPUT_SUBDATASET_URL=""
-INPUT_SUBDATASET_PATH="sourcedata/dandi-archive"
+# This cache derives from the content-id-to-usage-dandiset-path cache: it is registered as
+# an input subdataset, cloned into the derivatives dataset, and pinned in the provenance of
+# every run. Its published mapping lives on the `min` branch (a single JSON file held
+# directly in git), so the subdataset tracks that branch rather than the code-only default.
+# code/update.py reads the mapping from INPUT_SUBDATASET_PATH and resolves each content id's
+# asset size from the DANDI archive.
+INPUT_SUBDATASET_URL="https://github.com/dandi-cache/content-id-to-usage-dandiset-path.git"
+INPUT_SUBDATASET_PATH="sourcedata/content-id-to-usage-dandiset-path"
+INPUT_SUBDATASET_BRANCH="min"
 
 DS="${RUNNER_TEMP:-/tmp}/derivatives-dataset"
 DISTDIR="${RUNNER_TEMP:-/tmp}/dist-publish"
@@ -70,6 +74,10 @@ else
   datalad create --no-annex "${DS}"
   if [ -n "${INPUT_SUBDATASET_URL}" ]; then
     datalad clone -d "${DS}" "${INPUT_SUBDATASET_URL}" "${DS}/${INPUT_SUBDATASET_PATH}"
+    # The source's mapping lives on the `min` branch; track it so `--remote` updates follow it.
+    git -C "${DS}/${INPUT_SUBDATASET_PATH}" fetch origin "${INPUT_SUBDATASET_BRANCH}"
+    git -C "${DS}/${INPUT_SUBDATASET_PATH}" checkout -B "${INPUT_SUBDATASET_BRANCH}" "origin/${INPUT_SUBDATASET_BRANCH}"
+    git -C "${DS}" config -f .gitmodules "submodule.${INPUT_SUBDATASET_PATH}.branch" "${INPUT_SUBDATASET_BRANCH}"
   fi
   datalad save -d "${DS}" -m "Initialize derivatives dataset"
 fi

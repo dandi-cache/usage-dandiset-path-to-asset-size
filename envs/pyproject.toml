@@ -6,4 +6,5 @@ dependencies = [
     "datalad",
     "datalad-container",
     "dandi",
+    "pyyaml",
 ]

@@ -2,10 +2,10 @@
 
 A cache mapping each DANDI content id to its asset size in bytes.
 
-Each record is a single JSON object:
+Each record is a single-key JSON object mapping a content id to its size in bytes:
 
 ```json
-{"content_id": "00003b22-9c54-4d15-afae-42ea9816c146", "size": 1234567}
+{"00003b22-9c54-4d15-afae-42ea9816c146": 1234567}
 ```
 
 The content ids are exactly those of the [`dandi-cache/content-id-to-usage-dandiset-path`](https://github.com/dandi-cache/content-id-to-usage-dandiset-path) cache, which is consumed as an input subdataset. For each content id, the size is resolved from the [DANDI archive](https://dandiarchive.org/) via the [DANDI Python client](https://dandi.readthedocs.io/) (preferring each dandiset's most recently published version, falling back to the draft for unpublished dandisets).

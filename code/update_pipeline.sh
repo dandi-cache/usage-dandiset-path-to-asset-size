@@ -40,13 +40,13 @@ BOT_EMAIL="github-actions[bot]@users.noreply.github.com"
 
 # This cache derives from the content-id-to-usage-dandiset-path cache: it is registered as
 # an input subdataset, cloned into the derivatives dataset, and pinned in the provenance of
-# every run. Its mapping is currently published on the `main` branch (the branch that can be
-# lazily pulled today); switch INPUT_SUBDATASET_BRANCH to `derivatives` once the source moves
-# to that pattern. code/update.py reads the mapping from INPUT_SUBDATASET_PATH and resolves
-# each content id's asset size from the DANDI archive.
+# every run. Its mapping is published as JSON Lines on the source's `derivatives` branch (a
+# persistent DataLad dataset), so the subdataset tracks that branch and its content is pulled
+# via the `--input` on the containers-run below. code/update.py reads the mapping from
+# INPUT_SUBDATASET_PATH and resolves each content id's asset size from the DANDI archive.
 INPUT_SUBDATASET_URL="https://github.com/dandi-cache/content-id-to-usage-dandiset-path.git"
 INPUT_SUBDATASET_PATH="sourcedata/content-id-to-usage-dandiset-path"
-INPUT_SUBDATASET_BRANCH="main"
+INPUT_SUBDATASET_BRANCH="derivatives"
 
 DS="${RUNNER_TEMP:-/tmp}/derivatives-dataset"
 DISTDIR="${RUNNER_TEMP:-/tmp}/dist-publish"

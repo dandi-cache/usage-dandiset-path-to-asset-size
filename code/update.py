@@ -6,17 +6,26 @@ import pathlib
 import yaml
 from dandi.dandiapi import DandiAPIClient
 
-# The source cache is registered as an input subdataset under `sourcedata`. Its derivative is
-# a single mapping from each content id (a DANDI blob/zarr UUID) to a single
-# `{dandiset_id: asset_path}` pair. It is currently published as a YAML file on the source's
-# `main` branch; the JSON/gzip forms are also accepted so this keeps working if the source
-# later moves the derivative onto its `derivatives` branch.
+# The source cache is registered as an input subdataset under `sourcedata`. Its derivative
+# maps each content id (a DANDI blob/zarr UUID) to a single `{dandiset_id: asset_path}` pair.
+# It is published as JSON Lines on the source's `derivatives` branch (one single-key object
+# per line); the earlier YAML single-object form and JSON/gzip forms are also accepted for
+# backwards compatibility.
 SOURCE_SUBDATASET_NAME = "content-id-to-usage-dandiset-path"
 SOURCE_FILE_STEM = "content_id_to_usage_dandiset_path"
 
 
 def _load_source_mapping(base_directory: pathlib.Path) -> dict:
     source_directory = base_directory / "sourcedata" / SOURCE_SUBDATASET_NAME / "derivatives"
+
+    jsonl_file_path = source_directory / f"{SOURCE_FILE_STEM}.jsonl"
+    if jsonl_file_path.exists():
+        mapping: dict = {}
+        with jsonl_file_path.open(mode="r") as file_stream:
+            for line in file_stream:
+                if line.strip():
+                    mapping.update(json.loads(line))
+        return mapping
 
     yaml_file_path = source_directory / f"{SOURCE_FILE_STEM}.yaml"
     if yaml_file_path.exists():
@@ -39,7 +48,7 @@ def _load_source_mapping(base_directory: pathlib.Path) -> dict:
                 raw = gzip.decompress(raw)
             return json.loads(raw)
 
-    candidates = ", ".join([yaml_file_path.name] + [p.name for p in json_candidate_file_paths])
+    candidates = ", ".join([jsonl_file_path.name, yaml_file_path.name] + [p.name for p in json_candidate_file_paths])
     raise FileNotFoundError(f"Could not find the source mapping in {source_directory} (looked for: {candidates}).")
 
 

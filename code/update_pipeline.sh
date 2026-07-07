@@ -38,12 +38,15 @@ GITHUB_SHA="${GITHUB_SHA:-unknown}"
 BOT_NAME="github-actions[bot]"
 BOT_EMAIL="github-actions[bot]@users.noreply.github.com"
 
-# TODO: if this cache derives from an upstream DataLad dataset, set INPUT_SUBDATASET_URL to
-# register it as an input subdataset. It is cloned into the derivatives dataset and pinned
-# in the provenance of every run. Leave it empty if this cache has no upstream input
-# dataset; the subdataset handling below is then skipped.
-INPUT_SUBDATASET_URL=""  # e.g. https://github.com/dandi-cache/<input-dataset-name>.git
-INPUT_SUBDATASET_PATH="sourcedata/<input-dataset-name>"
+# This cache derives from the content-id-to-usage-dandiset-path cache: it is registered as
+# an input subdataset, cloned into the derivatives dataset, and pinned in the provenance of
+# every run. Its mapping is published as JSON Lines on the source's `derivatives` branch (a
+# persistent DataLad dataset), so the subdataset tracks that branch and its content is pulled
+# via the `--input` on the containers-run below. code/update.py reads the mapping from
+# INPUT_SUBDATASET_PATH and resolves each content id's asset size from the DANDI archive.
+INPUT_SUBDATASET_URL="https://github.com/dandi-cache/content-id-to-usage-dandiset-path.git"
+INPUT_SUBDATASET_PATH="sourcedata/content-id-to-usage-dandiset-path"
+INPUT_SUBDATASET_BRANCH="derivatives"
 
 DS="${RUNNER_TEMP:-/tmp}/derivatives-dataset"
 DISTDIR="${RUNNER_TEMP:-/tmp}/dist-publish"
@@ -71,6 +74,10 @@ else
   datalad create --no-annex "${DS}"
   if [ -n "${INPUT_SUBDATASET_URL}" ]; then
     datalad clone -d "${DS}" "${INPUT_SUBDATASET_URL}" "${DS}/${INPUT_SUBDATASET_PATH}"
+    # Track the branch that carries the source's mapping so `--remote` updates follow it.
+    git -C "${DS}/${INPUT_SUBDATASET_PATH}" fetch origin "${INPUT_SUBDATASET_BRANCH}"
+    git -C "${DS}/${INPUT_SUBDATASET_PATH}" checkout -B "${INPUT_SUBDATASET_BRANCH}" "origin/${INPUT_SUBDATASET_BRANCH}"
+    git -C "${DS}" config -f .gitmodules "submodule.${INPUT_SUBDATASET_PATH}.branch" "${INPUT_SUBDATASET_BRANCH}"
   fi
   datalad save -d "${DS}" -m "Initialize derivatives dataset"
 fi
@@ -82,12 +89,14 @@ mkdir -p "${DS}/derivatives"
 # Carry the study-level BIDS dataset_description.json (kept on the code branch) onto the
 # derivatives dataset so the published dataset is self-describing.
 cp "${WORKSPACE}/dataset_description.json" "${DS}/dataset_description.json"
-datalad save -d "${DS}" -m "Update dataset_description.json" dataset_description.json || true
+# Use an absolute path: `datalad save` resolves path arguments against the current directory,
+# which is the code checkout (not the dataset) at this point in the script.
+datalad save -d "${DS}" -m "Update dataset_description.json" "${DS}/dataset_description.json" || true
 
 # Advance the input subdataset to its latest commit and record the pointer.
 if [ -n "${INPUT_SUBDATASET_URL}" ]; then
   git -C "${DS}" submodule update --init --remote "${INPUT_SUBDATASET_PATH}"
-  datalad save -d "${DS}" -m "Update input subdataset to latest" "${INPUT_SUBDATASET_PATH}" || true
+  datalad save -d "${DS}" -m "Update input subdataset to latest" "${DS}/${INPUT_SUBDATASET_PATH}" || true
 fi
 
 cd "${DS}"
@@ -114,7 +123,7 @@ fi
 datalad containers-run -n pipeline --explicit \
   "${RUN_INPUT_ARGS[@]}" \
   --output derivatives \
-  -m "Update <cache-name> (code @ ${GITHUB_SHA}; image ${DIGEST})" \
+  -m "Update usage-dandiset-path-to-asset-size (code @ ${GITHUB_SHA}; image ${DIGEST})" \
   "python /code/update.py --base-directory /tmp --limit ${LIMIT}"
 
 # Publish the full results to the `derivatives` branch.
@@ -129,5 +138,5 @@ git -C "${DISTDIR}" init -q -b dist
 git -C "${DISTDIR}" config user.name "${BOT_NAME}"
 git -C "${DISTDIR}" config user.email "${BOT_EMAIL}"
 git -C "${DISTDIR}" add dataset_description.json derivatives
-git -C "${DISTDIR}" commit -q -m "Publish <cache-name>"
+git -C "${DISTDIR}" commit -q -m "Publish usage-dandiset-path-to-asset-size"
 git -C "${DISTDIR}" push -f "${REPO_URL}" dist:dist

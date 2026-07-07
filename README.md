@@ -1,12 +1,18 @@
-# DANDI Cache: `<cache-name>`
+# DANDI Cache: `usage-dandiset-path-to-asset-size`
 
-`<A short description of what this cache contains and how it is derived.>`
+A cache mapping each DANDI content id to its asset size in bytes.
+
+Each record is a single-key JSON object mapping a content id to its size in bytes:
+
+```json
+{"00003b22-9c54-4d15-afae-42ea9816c146": 1234567}
+```
+
+The content ids are exactly those of the [`dandi-cache/content-id-to-usage-dandiset-path`](https://github.com/dandi-cache/content-id-to-usage-dandiset-path) cache, which is consumed as an input subdataset. For each content id, the size is read straight from the public DANDI archive S3 bucket — the `contentSize` field of the `assets.jsonld` manifests under `s3://dandiarchive/dandisets/<dandiset_id>/<version>/` — the same manifests the grandparent [`dandi-cache/content-id-to-dandiset-paths`](https://github.com/dandi-cache/content-id-to-dandiset-paths) cache reads. No DANDI REST API calls are made. A content id whose asset is not found in the manifests is recorded with size `null`.
 
 Updated frequently.
 
 Primarily for use by developers.
-
-> **Note:** Throughout this template, `<cache-name>` refers to the hyphenated repository name (e.g., `my-cache`) and `<cache_name>` refers to the underscored form used for file and variable names (e.g., `my_cache`).
 
 
 
@@ -22,16 +28,16 @@ import json
 
 import requests
 
-url = "https://raw.githubusercontent.com/dandi-cache/<cache-name>/refs/heads/dist/derivatives/<cache_name>.jsonl.gz"
+url = "https://raw.githubusercontent.com/dandi-cache/usage-dandiset-path-to-asset-size/refs/heads/dist/derivatives/usage_dandiset_path_to_asset_size.jsonl.gz"
 response = requests.get(url)
 lines = gzip.decompress(data=response.content).decode("utf-8").splitlines()
-<cache_name> = [json.loads(line) for line in lines]
+usage_dandiset_path_to_asset_size = [json.loads(line) for line in lines]
 ```
 
 ### Save to file
 
 ```bash
-curl https://raw.githubusercontent.com/dandi-cache/<cache-name>/refs/heads/dist/derivatives/<cache_name>.jsonl.gz -o <cache_name>.jsonl.gz
+curl https://raw.githubusercontent.com/dandi-cache/usage-dandiset-path-to-asset-size/refs/heads/dist/derivatives/usage_dandiset_path_to_asset_size.jsonl.gz -o usage_dandiset_path_to_asset_size.jsonl.gz
 ```
 
 
@@ -41,7 +47,7 @@ curl https://raw.githubusercontent.com/dandi-cache/<cache-name>/refs/heads/dist/
 If you plan on using this cache regularly, clone the `dist` branch of this repository:
 
 ```bash
-git clone --branch dist https://github.com/dandi-cache/<cache-name>.git
+git clone --branch dist https://github.com/dandi-cache/usage-dandiset-path-to-asset-size.git
 ```
 
 Then set up a CRON on your system to pull the latest version of the cache at your desired frequency.
@@ -49,39 +55,10 @@ Then set up a CRON on your system to pull the latest version of the cache at you
 For example, through `crontab -e`, add:
 
 ```bash
-0 0 * * * git -C /path/to/<cache-name> pull
+0 0 * * * git -C /path/to/usage-dandiset-path-to-asset-size pull
 ```
 
 This will minimize data overhead by only loading the most recent changes.
-
-
-
-## How it works
-
-This cache template demonstrates how generated results of the code branch and records every update with full provenance.
-
-It uses three branches:
-
-- **`main`** holds only the code of the update logic, the runtime container definition, and the CI workflows (including building and distributing the container images).
-- [**`derivatives`**](https://github.com/dandi-cache/cache-template/tree/derivatives) is a persistent [DataLad](https://www.datalad.org/) dataset on its own branch. Each update is recorded there with `datalad containers-run`, so every revision carries full provenance of the exact command, the input subdataset commit, the output diff, and the runtime container image digest.
-- **`dist`** is the lightweight publication artifact consumed by downstream users and preferred for one-time downloads.
-
-The processing runs inside a published container image (`ghcr.io/dandi-cache/<cache-name>:latest`) that holds only the pinned runtime environment.
-
-The orchestration lives in [`code/update_pipeline.sh`](code/update_pipeline.sh); the actual cache logic lives in [`code/update.py`](code/update.py).
-
-The repository is described as a [BIDS study dataset](https://bids-specification.readthedocs.io/en/stable/common-principles.html#study-dataset) via [`dataset_description.json`](dataset_description.json) (`DatasetType: "study"`). Future enhancements may improve the provenance tracking through this mechanism in line with BEP028.
-
-
-
-## Repository setup
-
-After generating a repository from this template:
-
-1. Replace every `<cache-name>` / `<cache_name>` placeholder and resolve the `TODO` markers (the update schedule, the cache logic, the input dataset, the notification recipients). Fill in the placeholder fields in [`dataset_description.json`](dataset_description.json) (`Name`, `License`, `Authors`).
-2. Add this cache's processing dependencies to [`envs/pyproject.toml`](envs/pyproject.toml).
-3. Specify the [`code/update.py`](code/update.py) protocol.
-4. Delete this section from the local README.
 
 
 

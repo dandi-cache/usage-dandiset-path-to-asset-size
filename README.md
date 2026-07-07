@@ -8,7 +8,7 @@ Each record is a single-key JSON object mapping a content id to its size in byte
 {"00003b22-9c54-4d15-afae-42ea9816c146": 1234567}
 ```
 
-The content ids are exactly those of the [`dandi-cache/content-id-to-usage-dandiset-path`](https://github.com/dandi-cache/content-id-to-usage-dandiset-path) cache, which is consumed as an input subdataset. For each content id, the size is read straight from the public DANDI archive S3 bucket — the `contentSize` field of the `assets.jsonld` manifests under `s3://dandiarchive/dandisets/<dandiset_id>/<version>/` — the same manifests the grandparent [`dandi-cache/content-id-to-dandiset-paths`](https://github.com/dandi-cache/content-id-to-dandiset-paths) cache reads. No DANDI REST API calls are made. A content id whose asset is not found in the manifests is recorded with size `null`.
+The content ids are exactly those of the [`dandi-cache/content-id-to-usage-dandiset-path`](https://github.com/dandi-cache/content-id-to-usage-dandiset-path) cache, which is consumed as an input subdataset. For each content id, the size is read straight from the public DANDI archive S3 bucket — the `contentSize` field of the `assets.jsonld` manifests under `s3://dandiarchive/dandisets/<dandiset_id>/<version>/` — the same manifests the grandparent [`dandi-cache/content-id-to-dandiset-paths`](https://github.com/dandi-cache/content-id-to-dandiset-paths) cache reads. No DANDI REST API calls are made. The cache is accumulative: only resolved sizes are recorded (never `null`), and content ids that cannot be resolved yet (e.g. embargoed dandisets) are simply absent and retried on later runs.
 
 Updated frequently.
 

@@ -105,48 +105,84 @@ def _sizes_from_manifest(s3_client: "botocore.client.BaseClient", key: str) -> d
     return sizes
 
 
+def _load_previous_cache(cache_file_path: pathlib.Path) -> dict[str, int]:
+    """Read the previous run's cache back into memory (empty on a bootstrap run)."""
+    previous_cache: dict[str, int] = {}
+    if not cache_file_path.exists():
+        return previous_cache
+
+    with cache_file_path.open() as file_stream:
+        for line in file_stream:
+            if stripped_line := line.strip():
+                # Drop null sizes (written by earlier revisions of this cache) so those
+                # content ids are treated as unresolved and retried.
+                previous_cache.update(
+                    (content_id, size) for content_id, size in json.loads(stripped_line).items() if size is not None
+                )
+    return previous_cache
+
+
 def _run(base_directory: pathlib.Path, limit: int | None, max_workers: int) -> None:
-    # Resolve the size in bytes of every content id in the source mapping and emit a single-key
-    # `{content_id: size}` record for each.
+    # Resolve the size in bytes of the content ids in the source mapping and emit a single-key
+    # `{content_id: size}` record for each resolved id. Only resolved sizes are ever written:
+    # a record is never `null`. Content ids that cannot be resolved yet (embargoed dandiset,
+    # not present in any manifest) are simply absent and retried on the next run.
     #
-    # Every content id from the source mapping gets exactly one record so this cache always
-    # matches the source's size; the size is `null` whenever it cannot be resolved (no matching
-    # asset was found in the S3 manifests). This avoids having to separately track which ids
-    # errored or were already processed.
+    # The cache is accumulative and incremental: the pipeline runs on a clone of the
+    # persistent `derivatives` branch, so the previous run's cache is already present. Sizes
+    # recorded there are kept (a blob's size never changes), and each run works only on the
+    # dandisets that still have unresolved content ids, so limited runs make steady progress
+    # through the backlog instead of redoing the same prefix.
     #
-    # Sizes are read from the `assets.jsonld` manifests of only the Dandisets referenced by the
-    # source mapping, keyed by content id (a blob/zarr's `contentSize` is identical wherever it
-    # appears, so any Dandiset that uses it yields the same size).
+    # Sizes are read from the `assets.jsonld` manifests of the targeted dandisets, keyed by
+    # content id (a blob/zarr's `contentSize` is identical wherever it appears, so any
+    # dandiset that uses it yields the same size).
     #
-    # `limit` caps the number of Dandisets processed in a single run (primarily a testing/CI
-    # knob); the default processes every Dandiset referenced by the source mapping.
+    # `limit` caps the number of dandisets processed in a single run; the default processes
+    # every dandiset that still has unresolved content ids.
 
     source_mapping = _load_source_mapping(base_directory)
 
-    dandiset_ids = sorted({next(iter(dandiset_path)) for dandiset_path in source_mapping.values()})
+    derivatives_directory = base_directory / "derivatives"
+    derivatives_directory.mkdir(parents=True, exist_ok=True)
+    output_file_path = derivatives_directory / "usage_dandiset_path_to_asset_size.jsonl"
+
+    content_id_to_size = _load_previous_cache(output_file_path)
+
+    # Target only the dandisets that still have unresolved content ids.
+    unresolved_dandiset_ids = sorted(
+        {
+            next(iter(dandiset_path))
+            for content_id, dandiset_path in source_mapping.items()
+            if content_id not in content_id_to_size
+        }
+    )
     if limit is not None:
-        dandiset_ids = dandiset_ids[:limit]
+        unresolved_dandiset_ids = unresolved_dandiset_ids[:limit]
+    print(f"Processing {len(unresolved_dandiset_ids)} dandisets with unresolved content ids.", flush=True)
 
     s3_client = _build_s3_client(max_pool_connections=max_workers)
 
     manifest_keys: list[str] = []
-    for dandiset_id in dandiset_ids:
+    for dandiset_id in unresolved_dandiset_ids:
         manifest_keys.extend(_iter_manifest_keys(s3_client, dandiset_id))
 
-    content_id_to_size: dict[str, int] = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         sizes_from_manifest = functools.partial(_sizes_from_manifest, s3_client)
         for manifest_sizes in executor.map(sizes_from_manifest, manifest_keys):
             content_id_to_size.update(manifest_sizes)
 
-    derivatives_directory = base_directory / "derivatives"
-    derivatives_directory.mkdir(parents=True, exist_ok=True)
+    # Restrict to the source's content ids (the manifests also cover ids the source does not
+    # track) and drop ids the source no longer tracks.
+    records = {
+        content_id: content_id_to_size[content_id]
+        for content_id in source_mapping
+        if content_id_to_size.get(content_id) is not None
+    }
+    print(f"Resolved {len(records)} of {len(source_mapping)} content ids.", flush=True)
 
-    output_file_path = derivatives_directory / "usage_dandiset_path_to_asset_size.jsonl"
     with output_file_path.open(mode="w") as file_stream:
-        file_stream.writelines(
-            f"{json.dumps({content_id: content_id_to_size.get(content_id)})}\n" for content_id in source_mapping
-        )
+        file_stream.writelines(f"{json.dumps({content_id: records[content_id]})}\n" for content_id in sorted(records))
 
 
 if __name__ == "__main__":

@@ -89,12 +89,14 @@ mkdir -p "${DS}/derivatives"
 # Carry the study-level BIDS dataset_description.json (kept on the code branch) onto the
 # derivatives dataset so the published dataset is self-describing.
 cp "${WORKSPACE}/dataset_description.json" "${DS}/dataset_description.json"
-datalad save -d "${DS}" -m "Update dataset_description.json" dataset_description.json || true
+# Use an absolute path: `datalad save` resolves path arguments against the current directory,
+# which is the code checkout (not the dataset) at this point in the script.
+datalad save -d "${DS}" -m "Update dataset_description.json" "${DS}/dataset_description.json" || true
 
 # Advance the input subdataset to its latest commit and record the pointer.
 if [ -n "${INPUT_SUBDATASET_URL}" ]; then
   git -C "${DS}" submodule update --init --remote "${INPUT_SUBDATASET_PATH}"
-  datalad save -d "${DS}" -m "Update input subdataset to latest" "${INPUT_SUBDATASET_PATH}" || true
+  datalad save -d "${DS}" -m "Update input subdataset to latest" "${DS}/${INPUT_SUBDATASET_PATH}" || true
 fi
 
 cd "${DS}"

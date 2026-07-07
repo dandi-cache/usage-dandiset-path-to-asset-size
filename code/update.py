@@ -1,18 +1,31 @@
 import argparse
-import gzip
+import concurrent.futures
+import functools
 import json
 import pathlib
 
-import yaml
-from dandi.dandiapi import DandiAPIClient
+import boto3
+import botocore
+import botocore.config
+import botocore.exceptions
 
-# The source cache is registered as an input subdataset under `sourcedata`. Its derivative
-# maps each content id (a DANDI blob/zarr UUID) to a single `{dandiset_id: asset_path}` pair.
-# It is published as JSON Lines on the source's `derivatives` branch (one single-key object
-# per line); the earlier YAML single-object form and JSON/gzip forms are also accepted for
-# backwards compatibility.
+# The source cache is registered as an input subdataset under `sourcedata`. Its derivative is
+# published as JSON Lines on the source's `derivatives` branch (one single-key
+# `{content_id: {dandiset_id: path}}` object per line); the JSON single-object form is also
+# accepted for backwards compatibility. Only the content ids and their dandiset ids are used
+# here: the content ids define this cache's key set, and the dandiset ids select which S3
+# manifests to read.
 SOURCE_SUBDATASET_NAME = "content-id-to-usage-dandiset-path"
 SOURCE_FILE_STEM = "content_id_to_usage_dandiset_path"
+
+# Asset sizes are read directly from the public DANDI archive S3 bucket -- the same
+# `assets.jsonld` manifests the grandparent content-id-to-dandiset-paths cache reads -- rather
+# than from the DANDI REST API. Each Dandiset version publishes a manifest under
+# `dandisets/<dandiset_id>/<version>/assets.jsonld` listing every asset with its `contentSize`
+# and its `contentUrl`s (the second of which is the S3 URL that embeds the content id).
+_BUCKET = "dandiarchive"
+_REGION = "us-east-2"
+_ASSETS_SUFFIX = "/assets.jsonld"
 
 
 def _load_source_mapping(base_directory: pathlib.Path) -> dict:
@@ -27,82 +40,113 @@ def _load_source_mapping(base_directory: pathlib.Path) -> dict:
                     mapping.update(json.loads(line))
         return mapping
 
-    yaml_file_path = source_directory / f"{SOURCE_FILE_STEM}.yaml"
-    if yaml_file_path.exists():
-        # Use the libyaml-backed loader when available; the derivative is tens of megabytes
-        # and the pure-Python loader is markedly slower.
-        loader = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
-        with yaml_file_path.open(mode="rb") as file_stream:
-            return yaml.load(file_stream, Loader=loader)
-
     json_candidate_file_paths = [
         source_directory / f"{SOURCE_FILE_STEM}.json",
         source_directory / f"{SOURCE_FILE_STEM}.min.json",
-        source_directory / f"{SOURCE_FILE_STEM}.json.gz",
-        source_directory / f"{SOURCE_FILE_STEM}.min.json.gz",
     ]
     for file_path in json_candidate_file_paths:
         if file_path.exists():
-            raw = file_path.read_bytes()
-            if file_path.suffix == ".gz":
-                raw = gzip.decompress(raw)
-            return json.loads(raw)
+            return json.loads(file_path.read_text())
 
-    candidates = ", ".join([jsonl_file_path.name, yaml_file_path.name] + [p.name for p in json_candidate_file_paths])
+    candidates = ", ".join([jsonl_file_path.name] + [p.name for p in json_candidate_file_paths])
     raise FileNotFoundError(f"Could not find the source mapping in {source_directory} (looked for: {candidates}).")
 
 
-def _run(base_directory: pathlib.Path, limit: int | None) -> None:
-    # For each content id in the source mapping, resolve the size in bytes of the asset it
-    # refers to and emit a single-key `{content_id: size}` record.
+def _build_s3_client(max_pool_connections: int) -> "botocore.client.BaseClient":
+    # `dandiarchive` is a public bucket, so requests are sent unsigned (anonymous). The
+    # connection pool holds one connection per download worker to avoid redundant handshakes.
+    config = botocore.config.Config(
+        signature_version=botocore.UNSIGNED,
+        max_pool_connections=max_pool_connections,
+        retries={"mode": "standard"},
+    )
+    return boto3.client("s3", region_name=_REGION, config=config)
+
+
+def _content_id_from_content_urls(content_urls: list[str]) -> str:
+    # The second contentUrl is the S3 download URL: `.../blobs/<a>/<b>/<content_id>` for blob
+    # assets, or `.../zarr/<content_id>` for zarr assets (matching the grandparent cache).
+    s3_download_url = content_urls[1]
+    return s3_download_url.split("/")[-1] if "blobs" in s3_download_url else s3_download_url.split("/")[-2]
+
+
+def _iter_manifest_keys(s3_client: "botocore.client.BaseClient", dandiset_id: str):
+    """Yield every `assets.jsonld` key across all versions of the given Dandiset."""
+    paginator = s3_client.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=_BUCKET, Prefix=f"dandisets/{dandiset_id}/"):
+        for entry in page.get("Contents", []):
+            if entry["Key"].endswith(_ASSETS_SUFFIX):
+                yield entry["Key"]
+
+
+def _sizes_from_manifest(s3_client: "botocore.client.BaseClient", key: str) -> dict[str, int]:
+    try:
+        response = s3_client.get_object(Bucket=_BUCKET, Key=key)
+    except botocore.exceptions.ClientError as error:
+        error_code = error.response.get("Error", {}).get("Code", "")
+        # Embargoed Dandisets list their manifests but deny anonymous reads (AccessDenied); a
+        # manifest can also be deleted between listing and fetching (NoSuchKey). Both are
+        # expected upstream states, not pipeline failures, so skip the manifest.
+        if error_code in ("AccessDenied", "NoSuchKey"):
+            print(f"Skipping inaccessible manifest `{key}` ({error_code}).", flush=True)
+            return {}
+        raise
+
+    body = response["Body"].read()
+    all_asset_metadata = json.loads(body) if body.strip() else []
+
+    sizes: dict[str, int] = {}
+    for asset_metadata in all_asset_metadata:
+        content_urls = asset_metadata.get("contentUrl")
+        content_size = asset_metadata.get("contentSize")
+        if not content_urls or content_size is None:
+            continue
+        sizes[_content_id_from_content_urls(content_urls)] = content_size
+    return sizes
+
+
+def _run(base_directory: pathlib.Path, limit: int | None, max_workers: int) -> None:
+    # Resolve the size in bytes of every content id in the source mapping and emit a single-key
+    # `{content_id: size}` record for each.
     #
     # Every content id from the source mapping gets exactly one record so this cache always
-    # matches the source's size; the size is `null` whenever it cannot be resolved (the
-    # dandiset failed to enumerate, or the asset/path was not found). This avoids having to
-    # separately track which ids errored or were already processed.
+    # matches the source's size; the size is `null` whenever it cannot be resolved (no matching
+    # asset was found in the S3 manifests). This avoids having to separately track which ids
+    # errored or were already processed.
     #
-    # The content ids are grouped by dandiset so each dandiset's assets are enumerated only
-    # once and matched to the requested paths, rather than issuing one lookup per content id.
+    # Sizes are read from the `assets.jsonld` manifests of only the Dandisets referenced by the
+    # source mapping, keyed by content id (a blob/zarr's `contentSize` is identical wherever it
+    # appears, so any Dandiset that uses it yields the same size).
     #
-    # `limit` caps the number of dandisets processed in a single run (primarily a testing/CI
-    # knob); the default processes every dandiset referenced by the source mapping.
+    # `limit` caps the number of Dandisets processed in a single run (primarily a testing/CI
+    # knob); the default processes every Dandiset referenced by the source mapping.
 
     source_mapping = _load_source_mapping(base_directory)
 
-    content_ids_by_dandiset: dict[str, dict[str, str]] = {}  # dandiset_id -> {asset_path: content_id}
-    for content_id, dandiset_path in source_mapping.items():
-        ((dandiset_id, asset_path),) = dandiset_path.items()
-        content_ids_by_dandiset.setdefault(dandiset_id, {})[asset_path] = content_id
+    dandiset_ids = sorted({next(iter(dandiset_path)) for dandiset_path in source_mapping.values()})
+    if limit is not None:
+        dandiset_ids = dandiset_ids[:limit]
 
-    # Pre-seed every content id with `null`; resolved sizes overwrite it, unresolved ones stay.
-    content_id_to_size: dict[str, int | None] = {content_id: None for content_id in source_mapping}
-    with DandiAPIClient() as client:
-        for index, (dandiset_id, paths_to_content_ids) in enumerate(sorted(content_ids_by_dandiset.items())):
-            if limit is not None and index >= limit:
-                break
+    s3_client = _build_s3_client(max_pool_connections=max_workers)
 
-            try:
-                dandiset = client.get_dandiset(dandiset_id)
-                most_recent_published_version = dandiset.most_recent_published_version
-                if most_recent_published_version is not None:
-                    dandiset = dandiset.for_version(most_recent_published_version)
+    manifest_keys: list[str] = []
+    for dandiset_id in dandiset_ids:
+        manifest_keys.extend(_iter_manifest_keys(s3_client, dandiset_id))
 
-                for asset in dandiset.get_assets():
-                    content_id = paths_to_content_ids.get(asset.path)
-                    if content_id is not None:
-                        content_id_to_size[content_id] = asset.size
-            except Exception as exception:  # noqa: BLE001
-                # Skip dandisets that fail to enumerate (e.g. transient API errors, removed
-                # or embargoed dandisets) rather than aborting the entire run.
-                print(f"Skipping dandiset {dandiset_id}: {exception}")
-                continue
+    content_id_to_size: dict[str, int] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        sizes_from_manifest = functools.partial(_sizes_from_manifest, s3_client)
+        for manifest_sizes in executor.map(sizes_from_manifest, manifest_keys):
+            content_id_to_size.update(manifest_sizes)
 
     derivatives_directory = base_directory / "derivatives"
     derivatives_directory.mkdir(parents=True, exist_ok=True)
 
     output_file_path = derivatives_directory / "usage_dandiset_path_to_asset_size.jsonl"
     with output_file_path.open(mode="w") as file_stream:
-        file_stream.writelines(f"{json.dumps({content_id: size})}\n" for content_id, size in content_id_to_size.items())
+        file_stream.writelines(
+            f"{json.dumps({content_id: content_id_to_size.get(content_id)})}\n" for content_id in source_mapping
+        )
 
 
 if __name__ == "__main__":
@@ -125,6 +169,12 @@ if __name__ == "__main__":
         default=None,
         help="Optional cap on the number of dandisets to process in this run.",
     )
+    parser.add_argument(
+        "--max-workers",
+        type=int,
+        default=16,
+        help="Number of concurrent S3 workers used to list and fetch the asset manifests.",
+    )
     args = parser.parse_args()
 
-    _run(base_directory=args.base_directory, limit=args.limit)
+    _run(base_directory=args.base_directory, limit=args.limit, max_workers=args.max_workers)

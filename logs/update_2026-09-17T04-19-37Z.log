@@ -1,0 +1,5 @@
+2026-09-17T04:19:37Z INFO Logging to /tmp/logs/update_2026-09-17T04-19-37Z.log.
+2026-09-17T04:19:37Z INFO Update usage-dandiset-path-to-asset-size (base directory /tmp).
+2026-09-17T04:19:39Z INFO Processing 9 Dandisets with unresolved content IDs.
+2026-09-17T04:19:41Z INFO Resolved 411041 of 411952 content IDs.
+2026-09-17T04:19:42Z INFO Wrote 411041 records to /tmp/derivatives/usage_dandiset_path_to_asset_size.jsonl in 0.0 min (peak memory 604 MiB).

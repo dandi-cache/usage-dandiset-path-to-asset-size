@@ -1,9 +1,28 @@
 {
     "Name": "usage-dandiset-path-to-asset-size",
-    "BIDSVersion": "1.10.0",
+    "BIDSVersion": "1.11.1",
     "DatasetType": "study",
     "License": "CC-BY-4.0",
     "Authors": [
-        "Baker, Cody C."
+        "Cody Baker"
+    ],
+    "ReferencesAndLinks": [
+        "https://github.com/dandi-cache/usage-dandiset-path-to-asset-size"
+    ],
+    "SourceDatasets": [
+        {
+            "URL": "https://github.com/dandi-cache/content-id-to-usage-dandiset-path.git"
+        }
+    ],
+    "GeneratedBy": [
+        {
+            "Name": "dandi-cache-utils",
+            "Version": "0.1.8",
+            "CodeURL": "https://github.com/dandi-cache/dandi-cache-utils",
+            "Container": {
+                "ContainerType": "docker",
+                "ContainerTag": "ghcr.io/dandi-cache/usage-dandiset-path-to-asset-size"
+            }
+        }
     ]
 }

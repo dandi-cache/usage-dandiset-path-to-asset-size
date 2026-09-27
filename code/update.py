@@ -44,7 +44,7 @@ def main() -> None:
             if content_id not in sizes and dandiset_path
         }
     )
-    limit = dandi_cache.effective_limit(testing=dataset.testing, limit=arguments.limit)
+    limit = dataset.limit(arguments.limit)
     if limit is not None:
         unresolved_dandiset_ids = unresolved_dandiset_ids[:limit]
     dandi_cache.logger.info("Processing %d Dandisets with unresolved content IDs.", len(unresolved_dandiset_ids))

@@ -18,6 +18,10 @@ name = "content-id-to-usage-dandiset-path"
 # number; it is declared once here.
 [operations.update]
 limit = 2000
+# The unit here is a Dandiset rather than a content ID, and one Dandiset's manifests resolve
+# many sizes at once, so two is enough to exercise the listing, the manifest read and the
+# merge into what is already published.
+testing_limit = 2
 
 # The published branches describe this repository as a BIDS study dataset, through a
 # `dataset_description.json` with `DatasetType: "study"`. The pipeline renders that file from this

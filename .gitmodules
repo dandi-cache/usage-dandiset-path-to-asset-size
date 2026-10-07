@@ -3,3 +3,6 @@
 	url = https://github.com/dandi-cache/content-id-to-usage-dandiset-path.git
 	datalad-url = https://github.com/dandi-cache/content-id-to-usage-dandiset-path.git
 	branch = derivatives
+[submodule "workspace"]
+	path = workspace
+	url = ./workspace

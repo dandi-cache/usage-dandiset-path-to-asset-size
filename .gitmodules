@@ -5,5 +5,5 @@
 	branch = derivatives
 [submodule "workspace"]
 	path = workspace
-	url = .
+	url = ../usage-dandiset-path-to-asset-size.git
 	datalad-url = https://github.com/dandi-cache/usage-dandiset-path-to-asset-size.git
